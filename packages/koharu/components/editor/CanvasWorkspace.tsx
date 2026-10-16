@@ -217,6 +217,7 @@ export function CanvasWorkspace() {
   const cancelGesture = useCallback(() => {
     const current = gesture.current
     gesture.current = null
+    setSelectionRect(null)
     if (current?.kind === 'paint' || current?.kind === 'erase' || current?.kind === 'inpaint') {
       strokeUpdates.clear()
       canvas?.cancelStroke()
