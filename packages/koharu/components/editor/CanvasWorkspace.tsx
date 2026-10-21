@@ -110,6 +110,7 @@ export function CanvasWorkspace() {
   const page = usePage().data
   const pages = usePages().data
   const canvasPage = useKoharuStore((state) => state.canvasPage)
+  const camera = useKoharuStore((state) => state.camera) 
   const canvasRevision = useKoharuStore((state) => state.canvasRevision)
   const canvasGeneration = useKoharuStore((state) => state.canvasGeneration)
   const canvasSize = useKoharuStore((state) => state.canvasSize)
