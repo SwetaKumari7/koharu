@@ -33,7 +33,7 @@ import {
 } from '@/lib/queries'
 import {
   isBrushTool,
-  MAX_BRUSH_DIAMETER,
+  maxBrushDiameter,
   MIN_BRUSH_DIAMETER,
   receiveError,
   useKoharuStore,
@@ -109,7 +109,6 @@ export function CanvasWorkspace() {
 
   const page = usePage().data
   const pages = usePages().data
-  const camera = useKoharuStore((state) => state.camera)
   const canvasPage = useKoharuStore((state) => state.canvasPage)
   const canvasRevision = useKoharuStore((state) => state.canvasRevision)
   const canvasGeneration = useKoharuStore((state) => state.canvasGeneration)
@@ -285,9 +284,22 @@ export function CanvasWorkspace() {
     }
   }, [report])
 
+  // The camera reaches the canvas from the store, not from a render: a passive effect lands a
+  // frame late under continuous input and halves the presented rate.
   useEffect(() => {
-    canvas?.setView(camera.zoom, camera.translation)
-  }, [canvas, camera])
+    if (!canvas) return
+    const apply = ({ zoom, translation }: CanvasView) => {
+      try {
+        canvas.setView(zoom, translation)
+      } catch (error) {
+        receiveError(errorMessage(error))
+      }
+    }
+    apply(useKoharuStore.getState().camera)
+    return useKoharuStore.subscribe((state, previous) => {
+      if (state.camera !== previous.camera) apply(state.camera)
+    })
+  }, [canvas])
 
   useEffect(() => {
     if (
@@ -435,6 +447,7 @@ export function CanvasWorkspace() {
     }
 
     if (current.kind === 'pan') {
+      const { zoom } = useKoharuStore.getState().camera
       const bounds = surface.current!.getBoundingClientRect()
       const dpr = window.devicePixelRatio
       let translation: [number, number] = [
@@ -443,14 +456,14 @@ export function CanvasWorkspace() {
       ]
       translation = clampCameraTranslation(
         translation,
-        camera.zoom,
+        zoom,
         pageWidth ?? page.size.width,
         pageHeight ?? page.size.height,
         bounds.width * dpr,
         bounds.height * dpr,
         dpr,
       )
-      useKoharuStore.setState({ camera: { zoom: camera.zoom, translation, fitted: false } })
+      useKoharuStore.setState({ camera: { zoom, translation, fitted: false } })
       return
     }
 
@@ -514,8 +527,8 @@ export function CanvasWorkspace() {
     } else if (current.kind === 'move') {
       finishTransform()
     } else if (current.kind === 'text') {
-      const pointText =
-        current.frame.width < 4 / camera.zoom && current.frame.height < 4 / camera.zoom
+      const { zoom } = useKoharuStore.getState().camera
+      const pointText = current.frame.width < 4 / zoom && current.frame.height < 4 / zoom
       setDraft(null)
       void (
         pointText
@@ -538,30 +551,30 @@ export function CanvasWorkspace() {
       const operation =
         current.kind === 'paint'
           ? enqueue(() =>
-              call(commands.commitPaint, current.revision, current.layer, current.points, {
-                diameter: current.diameter,
-                color: current.color!,
-              }),
+            call(commands.commitPaint, current.revision, current.layer, current.points, {
+              diameter: current.diameter,
+              color: current.color!,
+            }),
+          ).then((result) => {
+            selectLayers([result.layer])
+            return refresh(projectKey, pagesKey, pageKey)
+          })
+          : current.kind === 'erase'
+            ? enqueue(() =>
+              call(
+                commands.commitErase,
+                current.revision,
+                current.layer!,
+                current.points,
+                current.diameter,
+              ),
             ).then((result) => {
               selectLayers([result.layer])
               return refresh(projectKey, pagesKey, pageKey)
             })
-          : current.kind === 'erase'
-            ? enqueue(() =>
-                call(
-                  commands.commitErase,
-                  current.revision,
-                  current.layer!,
-                  current.points,
-                  current.diameter,
-                ),
-              ).then((result) => {
-                selectLayers([result.layer])
-                return refresh(projectKey, pagesKey, pageKey)
-              })
             : enqueue(() =>
-                call(commands.commitInpaint, current.revision, current.points, current.diameter),
-              )
+              call(commands.commitInpaint, current.revision, current.points, current.diameter),
+            )
       commitPending.current = true
       void operation
         .catch(() => canvas?.cancelStroke())
@@ -607,7 +620,7 @@ export function CanvasWorkspace() {
                 kind: 'pan',
                 pointer: event.pointerId,
                 start: physical,
-                translation: camera.translation,
+                translation: useKoharuStore.getState().camera.translation,
               }
             } else if (tool === 'select') {
               const target = hitTestLayers(page.layers, point, layerFrames)
@@ -756,7 +769,7 @@ export function CanvasWorkspace() {
                 const nextDiameter = clamp(
                   currentBrush.diameter + delta,
                   MIN_BRUSH_DIAMETER,
-                  MAX_BRUSH_DIAMETER,
+                  maxBrushDiameter(page.size),
                 )
                 if (nextDiameter !== currentBrush.diameter) {
                   setBrush({ ...currentBrush, diameter: nextDiameter })
@@ -825,7 +838,6 @@ export function CanvasWorkspace() {
           {page && canvasState.status === 'ready' && (
             <CanvasOverlay
               page={page}
-              camera={camera}
               selected={selected}
               hovered={hovered}
               frames={layerFrames}
@@ -981,7 +993,7 @@ class FrameCommand<Value> {
   constructor(
     private readonly execute: (value: Value) => void | Promise<unknown>,
     private readonly merge: (current: Value, next: Value) => Value = (_current, next) => next,
-  ) {}
+  ) { }
 
   schedule(value: Value): void {
     this.pending = this.pending === undefined ? value : this.merge(this.pending, value)
